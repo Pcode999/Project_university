@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import StudentSearch from "../components/StudentSearch";
-
 import MainContent from "../components/MainContent";
 
 type UserInfo = {

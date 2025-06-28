@@ -12,11 +12,9 @@ const SignupPage = () => {
     const file = e.target.files?.[0]
     if (!file) return
 
-    // แสดง preview blob ชั่วคราว
     const preview = URL.createObjectURL(file)
     setPreviewImage(preview)
 
-    // ✅ อัปโหลดภาพไป backend
     const formData = new FormData()
     formData.append("file", file)
 
@@ -69,6 +67,9 @@ const SignupPage = () => {
       })
 
       if (response.ok) {
+        // ✅ ดาวน์โหลดภาพหลังจากสมัครแล้ว (บอก backend ทำด้วย)
+        await fetch("http://localhost:8000/startup_refresh") // เรียก endpoint ที่จะโหลดรูปเข้า images ใหม่
+
         alert("Signup successful!")
         navigate("/")
       } else {
@@ -92,7 +93,6 @@ const SignupPage = () => {
           </p>
         )}
 
-        {/* Profile Preview */}
         <div className="mb-6 w-full flex flex-col items-center">
           <div className="relative w-28 h-28">
             <img
@@ -117,7 +117,6 @@ const SignupPage = () => {
           <p className="text-sm text-gray-500 mt-2">Upload profile picture</p>
         </div>
 
-        {/* Username */}
         <div className="mb-4 w-full">
           <label htmlFor="username" className="block text-sm font-medium text-gray-700 mb-1">
             Username
@@ -130,7 +129,6 @@ const SignupPage = () => {
           />
         </div>
 
-        {/* Email */}
         <div className="mb-4 w-full">
           <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">
             Email
@@ -143,7 +141,6 @@ const SignupPage = () => {
           />
         </div>
 
-        {/* Password */}
         <div className="mb-4 w-full">
           <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1">
             Password
@@ -156,7 +153,6 @@ const SignupPage = () => {
           />
         </div>
 
-        {/* Role */}
         <div className="mb-6 w-full">
           <label htmlFor="role" className="block text-sm font-medium text-gray-700 mb-1">
             Role
@@ -182,7 +178,7 @@ const SignupPage = () => {
         </button>
 
         <p className="text-center text-sm text-gray-600 mt-4">
-          Already have an account?{" "}
+          Already have an account?{' '}
           <button type="button" onClick={() => navigate('/')} className="text-green-600 hover:underline">
             Login
           </button>

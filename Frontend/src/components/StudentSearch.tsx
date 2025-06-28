@@ -1,49 +1,48 @@
-import { useState } from "react"
+import { useState } from "react";
 
 type User = {
-  _id: string
-  username: string
-  email: string
-  profileImage: string
-}
+  _id: string;
+  username: string;
+  email: string;
+  profileImage: string;
+};
 
 const StudentSearch = () => {
-  const [keyword, setKeyword] = useState("")
-  const [results, setResults] = useState<User[]>([])
-
-  const [subject, setSubject] = useState("")
-  const [penalty, setPenalty] = useState("")
+  const [keyword, setKeyword] = useState("");
+  const [results, setResults] = useState<User[]>([]);
+  const [penalty, setPenalty] = useState("");
 
   const handleSearch = async () => {
-    if (!keyword) return
-    const res = await fetch(`http://localhost:8000/search-students?name=${keyword}`)
-    const data = await res.json()
-    setResults(data)
-  }
+    if (!keyword) return;
+    const res = await fetch(`http://localhost:8000/search-students?name=${keyword}`);
+    const data = await res.json();
+    setResults(data);
+  };
 
   const handleSave = async () => {
-    if (!subject || !penalty || results.length === 0) return
+    if (!penalty || results.length === 0) return;
 
-    const student_id = results[0]._id
+    const student_id = results[0]._id;
+    const created_at = new Date().toISOString();
 
     const res = await fetch("http://localhost:8000/behavior-report", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         student_id,
-        subject,
-        penalty: Number(penalty)
+        penalty: Number(penalty),
+        created_at
       })
-    })
+    });
 
+    const data = await res.json();
     if (res.ok) {
-      alert("✅ บันทึกพฤติกรรมสำเร็จแล้ว")
-      setSubject("")
-      setPenalty("")
+      alert("✅ บันทึกพฤติกรรมสำเร็จแล้ว");
+      setPenalty("");
     } else {
-      alert("❌ บันทึกไม่สำเร็จ")
+      alert("❌ บันทึกไม่สำเร็จ: " + data.detail);
     }
-  }
+  };
 
   return (
     <div className="w-full max-w-4xl bg-white p-6 rounded-xl shadow-lg my-6 mx-auto border border-gray-200">
@@ -66,7 +65,7 @@ const StudentSearch = () => {
         </button>
       </div>
 
-      {results.length > 0 ? (
+      {results.length > 0 && (
         <>
           <ul className="space-y-4">
             {results.map((user) => (
@@ -89,22 +88,15 @@ const StudentSearch = () => {
 
           <div className="mt-6 border-t pt-5">
             <h4 className="text-lg font-semibold text-gray-800 mb-3">
-              📚 บันทึกวิชาที่หลับ และหักคะแนน
+              📌 บันทึกพฤติกรรม (หักคะแนน)
             </h4>
             <form
               onSubmit={(e) => {
-                e.preventDefault()
-                handleSave()
+                e.preventDefault();
+                handleSave();
               }}
               className="grid grid-cols-1 sm:grid-cols-2 gap-4"
             >
-              <input
-                type="text"
-                placeholder="ชื่อวิชา (เช่น คณิตศาสตร์)"
-                value={subject}
-                onChange={(e) => setSubject(e.target.value)}
-                className="border border-gray-300 rounded-lg p-3 w-full focus:ring-2 focus:ring-blue-500"
-              />
               <input
                 type="number"
                 placeholder="หักคะแนน (เช่น 2)"
@@ -121,13 +113,9 @@ const StudentSearch = () => {
             </form>
           </div>
         </>
-      ) : keyword ? (
-        <p className="text-gray-500 text-sm italic text-center">
-          ไม่พบนักเรียนที่ตรงกับคำค้น
-        </p>
-      ) : null}
+      )}
     </div>
-  )
-}
+  );
+};
 
-export default StudentSearch
+export default StudentSearch;

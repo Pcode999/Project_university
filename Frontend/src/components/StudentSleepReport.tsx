@@ -1,4 +1,3 @@
-
 import { useEffect, useState } from "react"
 
 type UserData = {
@@ -10,7 +9,6 @@ type UserData = {
 
 type Behavior = {
   _id: string
-  subject: string
   penalty: number
   created_at: string
 }
@@ -88,22 +86,31 @@ const StudentSleepReport = ({ user }: Props) => {
         ) : (
           <table className="w-full table-auto border-collapse">
             <thead>
-              <tr className="bg-gray-200 text-gray-700">
+              <tr className="bg-gray-200 text-gray-700 text-center">
                 <th className="p-2 border">วันที่</th>
-                <th className="p-2 border">วิชา</th>
+                <th className="p-2 border">เวลา</th>
                 <th className="p-2 border">หักคะแนน</th>
               </tr>
             </thead>
             <tbody>
-              {report.map((item) => (
-                <tr key={item._id} className="text-center">
-                  <td className="p-2 border">
-                    {new Date(item.created_at).toLocaleDateString("th-TH")}
-                  </td>
-                  <td className="p-2 border">{item.subject}</td>
-                  <td className="p-2 border text-red-600 font-semibold">-{item.penalty}</td>
-                </tr>
-              ))}
+              {report.map((item) => {
+                const utc = new Date(item.created_at)
+                const bangkok = new Date(utc.getTime() + 7 * 60 * 60 * 1000)
+                const date = bangkok.toLocaleDateString("th-TH")
+                const time = bangkok.toLocaleTimeString("th-TH", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  hour12: false
+                })
+
+                return (
+                  <tr key={item._id} className="text-center">
+                    <td className="p-2 border">{date}</td>
+                    <td className="p-2 border">{time}</td>
+                    <td className="p-2 border text-red-600 font-semibold">-{item.penalty}</td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         )}
