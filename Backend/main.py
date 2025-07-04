@@ -15,14 +15,12 @@ from PIL import Image
 from io import BytesIO
 import cv2
 import numpy as np
-import dlib
-from imutils import face_utils
 
-from SleepAndDetect import OptimizedFaceSleepDetector
+from face_recognizer import FaceRecognizer
+from sleep_detector import MediaPipeSleepDetector  # ✅ ใช้ MediaPipe แทน
 
 app = FastAPI()
 
-# CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,26 +29,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Static files
 os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# MongoDB
 client = MongoClient("mongodb://localhost:27017/")
 db = client["Project_sleep_classroom"]
 users_collection = db["users"]
 behavior_collection = db["student_behavior_report"]
 
-# Initialize AI detector
-face_detector = OptimizedFaceSleepDetector()
+face_recognizer = FaceRecognizer()
+sleep_detector = MediaPipeSleepDetector()
 is_streaming = False
 
-@app.on_event("startup")
-async def startup_event():
-    face_detector.load_models()
-    face_detector.load_known_faces()
-
-# Schemas
 class FrameData(BaseModel):
     image: str
 
@@ -80,27 +70,6 @@ def serialize_user(user):
         "role": user["role"]
     }
 
-# Video stream generator
-def generate_frames():
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-
-    while is_streaming:
-        success, frame = cap.read()
-        if not success:
-            break
-
-        frame = cv2.flip(frame, 1)
-        results = face_detector.process_frame_fast(frame)
-        frame = face_detector.draw_results(frame, results)
-
-        _, buffer = cv2.imencode('.jpg', frame)
-        frame_bytes = buffer.tobytes()
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-    cap.release()
-
 @app.post("/signup")
 async def signup(user: User):
     if users_collection.find_one({"email": user.email}) or users_collection.find_one({"username": user.username}):
@@ -110,10 +79,7 @@ async def signup(user: User):
 
 @app.post("/login")
 async def login(user: UserLogin):
-    found = users_collection.find_one({
-        "username": user.username,
-        "password": user.password
-    })
+    found = users_collection.find_one({"username": user.username, "password": user.password})
     if not found:
         raise HTTPException(status_code=401, detail="Invalid username or password")
     return {
@@ -132,10 +98,7 @@ async def get_users():
 
 @app.get("/search-students")
 async def search_students(name: str = ""):
-    results = users_collection.find({
-        "role": "student",
-        "username": {"$regex": name, "$options": "i"}
-    })
+    results = users_collection.find({"role": "student", "username": {"$regex": name, "$options": "i"}})
     return [serialize_user(u) for u in results]
 
 @app.get("/student/{username}")
@@ -181,61 +144,29 @@ async def process_frame(frame: FrameData):
     try:
         if not frame.image.startswith('data:image'):
             raise HTTPException(status_code=400, detail="Invalid base64 format")
+
         img_data = base64.b64decode(frame.image.split(',')[1])
         img = Image.open(BytesIO(img_data))
         img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        faces = face_detector.detector(gray)
 
-        count_sleep, count_drowsy, count_active = 0, 0, 0
-        for face in faces:
-            landmarks = face_utils.shape_to_np(face_detector.predictor(gray, face))
-            left = face_detector.calculate_ear(landmarks[36:42])
-            right = face_detector.calculate_ear(landmarks[42:48])
-            ear = (left + right) / 2.0
-            if ear > 0.25:
-                count_active += 1
-            elif ear > 0.20:
-                count_drowsy += 1
-            else:
-                count_sleep += 1
+        detections = sleep_detector.detect(img)
+        face_locations, names = face_recognizer.recognize_faces(img)
 
-        return {
-            "status": "Frame processed",
-            "sleeping_count": count_sleep,
-            "drowsy_count": count_drowsy,
-            "active_count": count_active
-        }
+        result = {"status": "Frame processed", "detections": [], "recognized_faces": []}
 
+        for det in detections:
+            result["detections"].append({
+                "ear": det["ear"],
+                "status": det["status"],
+                "box": det["box"]
+            })
+
+        for (top, right, bottom, left), name in zip(face_locations, names):
+            result["recognized_faces"].append({"name": name, "box": (left, top, right, bottom)})
+
+        return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error: {e}")
-
-@app.post("/behavior-report")
-async def save_behavior(data: Behavior):
-    try:
-        behavior_collection.insert_one({
-            "student_id": ObjectId(data.student_id),
-            "penalty": data.penalty,
-            "created_at": data.created_at
-        })
-        return {"message": "Behavior report saved"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/behavior-report/{student_id}")
-async def get_behavior_report(student_id: str):
-    try:
-        reports = behavior_collection.find({"student_id": ObjectId(student_id)})
-        return [
-            {
-                "_id": str(r["_id"]),
-                "penalty": r["penalty"],
-                "created_at": r.get("created_at")
-            }
-            for r in reports
-        ]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/start_stream")
 async def start_stream():
@@ -249,6 +180,38 @@ async def stop_stream():
     is_streaming = False
     return {"message": "Video stream stopped", "status": "success"}
 
+def generate_frames():
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+    while is_streaming:
+        success, frame = cap.read()
+        if not success:
+            break
+
+        frame = cv2.flip(frame, 1)
+
+        detections = sleep_detector.detect(frame)
+        face_locations, names = face_recognizer.recognize_faces(frame)
+
+        for det in detections:
+            x1, y1, x2, y2 = det["box"]
+            status = det["status"]
+            color = det["color"]
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(frame, status, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+        for (top, right, bottom, left), name in zip(face_locations, names):
+            cv2.rectangle(frame, (left, top), (right, bottom), (255, 255, 0), 2)
+            cv2.putText(frame, name, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+
+        _, buffer = cv2.imencode('.jpg', frame)
+        frame_bytes = buffer.tobytes()
+        yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
+    cap.release()
+
 @app.get("/video_feed")
 async def video_feed():
     global is_streaming
@@ -259,6 +222,3 @@ async def video_feed():
 @app.get("/stream_status")
 async def get_stream_status():
     return {"is_streaming": is_streaming}
-
-
-# หน้า main.py
