@@ -25,7 +25,7 @@ const StudentSearch = () => {
     const student_id = results[0]._id;
     const created_at = new Date().toISOString();
 
-    const res = await fetch("http://localhost:8000/behavior-report", {
+    const res = await fetch("http://localhost:8000/behavior-reports", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

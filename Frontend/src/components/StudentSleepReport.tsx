@@ -26,7 +26,7 @@ const StudentSleepReport = ({ user }: Props) => {
 
     const fetchReport = async () => {
       try {
-        const res = await fetch(`http://localhost:8000/behavior-report/${user._id}`)
+        const res = await fetch(`http://localhost:8000/behavior-reports/${user._id}`)
         if (!res.ok) throw new Error("ไม่สามารถดึงข้อมูลพฤติกรรมได้")
         const data = await res.json()
         setReport(data)

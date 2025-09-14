@@ -1,0 +1,58 @@
+# ---------- Builder: compile native deps / build wheels ----------
+FROM python:3.11-slim AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Build tools + headers for dlib/mediapipe/numpy wheels (fallback if no prebuilt)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc g++ \
+    cmake \
+    make \
+    python3-dev \
+    libopenblas-dev \
+    liblapack-dev \
+    # optional but commonly needed by some wheels
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /wheels
+COPY requirements.txt /tmp/requirements.txt
+
+# Upgrade pip/setuptools/wheel to maximize chance of picking prebuilt manylinux wheels
+RUN python -m pip install --upgrade pip setuptools wheel
+
+# Build wheels for everything (this will compile only if wheels aren't available)
+RUN pip wheel -r /tmp/requirements.txt -w /wheels
+
+# ---------- Runtime: small image with only runtime libs ----------
+FROM python:3.11-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Runtime libs needed by opencv (and friends)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    libopenblas0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install from wheels built in previous stage
+COPY --from=builder /wheels /wheels
+COPY requirements.txt .
+RUN python -m pip install --upgrade pip && pip install --no-index --find-links=/wheels -r requirements.txt
+
+# Copy your app code
+COPY . .
+
+EXPOSE 8000
+# Important: bind to 0.0.0.0 for containers
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
