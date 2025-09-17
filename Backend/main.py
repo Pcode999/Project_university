@@ -598,6 +598,13 @@ async def video_feed(request: Request):
         headers=headers,
     )
 
+# ===== Sleep history StudentDashborad.tsx =====
+
+@app.get("/sleep-history/{username}")
+async def get_sleep_history(username: str):
+    history = [entry for entry in sleepingList if entry["name"] == username]
+    return {"history": history}
+
 
 # ===== ROOT =====
 @app.get("/")
