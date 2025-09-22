@@ -1,7 +1,9 @@
 // MainContent.tsx
 import React, { useState, useEffect, useRef } from "react";
+import { API_URL } from "../constant/constant";
+import CourseSelector from "./CourseSelector";
 
-const API_BASE_URL = "http://localhost:8000";
+const API_BASE_URL = API_URL;
 
 type StreamStatusType = "connected" | "disconnected" | "error";
 
@@ -13,6 +15,7 @@ type StatusPayload = {
     faces: string[];
     timestamp: number | null;
   };
+  current_course_id: string | null;
 };
 
 const MainContent: React.FC = () => {
@@ -21,16 +24,33 @@ const MainContent: React.FC = () => {
   const [label, setLabel] = useState<string | null>(null);
   const [confidence, setConfidence] = useState<number | null>(null);
   const [faces, setFaces] = useState<string[]>([]);
+  const [selectedCourseId, setSelectedCourseId] = useState<string | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
+
+  // Sync course selection with backend
+  const handleCourseSelect = async (courseId: string | null) => {
+    setSelectedCourseId(courseId);
+    try {
+      await fetch(`${API_BASE_URL}set_course_for_detection`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ course_id: courseId }),
+      });
+    } catch (error) {
+      console.error("Error setting course for detection:", error);
+    }
+  };
 
   const startStream = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/start_stream`, { method: "POST" });
+      const response = await fetch(`${API_BASE_URL}start_stream`, { method: "POST" });
       if (response.ok) {
         setIsStreaming(true);
         setStreamStatus("connected");
         if (imgRef.current) {
-          imgRef.current.src = `${API_BASE_URL}/video_feed?t=${Date.now()}`;
+          imgRef.current.src = `${API_BASE_URL}video_feed?t=${Date.now()}`;
         }
       } else setStreamStatus("error");
     } catch (e) {
@@ -41,7 +61,7 @@ const MainContent: React.FC = () => {
 
   const stopStream = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/stop_stream`, { method: "POST" });
+      const response = await fetch(`${API_BASE_URL}stop_stream`, { method: "POST" });
       if (response.ok) {
         setIsStreaming(false);
         setStreamStatus("disconnected");
@@ -57,7 +77,7 @@ const MainContent: React.FC = () => {
 
   const checkStreamStatus = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/stream_status`);
+      const response = await fetch(`${API_BASE_URL}stream_status`);
       const data: StatusPayload = await response.json();
       setIsStreaming(data.is_streaming);
       setStreamStatus(data.is_streaming ? "connected" : "disconnected");
@@ -65,6 +85,10 @@ const MainContent: React.FC = () => {
         setLabel(data.status.label);
         setConfidence(data.status.confidence);
         setFaces(data.status.faces || []);
+      }
+      // Sync course selection from backend
+      if (data.current_course_id !== undefined) {
+        setSelectedCourseId(data.current_course_id);
       }
     } catch (e) {
       console.error("checkStreamStatus error:", e);
@@ -80,7 +104,7 @@ const MainContent: React.FC = () => {
 
   useEffect(() => {
     if (isStreaming && imgRef.current) {
-      imgRef.current.src = `${API_BASE_URL}/video_feed?t=${Date.now()}`;
+      imgRef.current.src = `${API_BASE_URL}video_feed?t=${Date.now()}`;
     }
   }, [isStreaming]);
 
@@ -88,7 +112,7 @@ const MainContent: React.FC = () => {
     setStreamStatus("error");
     setTimeout(() => {
       if (isStreaming && imgRef.current) {
-        imgRef.current.src = `${API_BASE_URL}/video_feed?t=${Date.now()}`;
+        imgRef.current.src = `${API_BASE_URL}video_feed?t=${Date.now()}`;
       }
     }, 1500);
   };
@@ -184,6 +208,15 @@ const MainContent: React.FC = () => {
           </div>
         </div>
 
+        {/* Course Selection Section */}
+        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 px-4 sm:px-6 lg:px-8 py-4 border-b border-gray-100">
+          <CourseSelector
+            selectedCourseId={selectedCourseId}
+            onCourseSelect={handleCourseSelect}
+            className="max-w-md mx-auto"
+          />
+        </div>
+
         {/* Controls Section */}
         <div className="bg-gradient-to-r from-emerald-50 to-green-50 px-4 sm:px-6 lg:px-8 py-4 sm:py-6">
           <div className="flex justify-center">
@@ -242,6 +275,17 @@ const MainContent: React.FC = () => {
                       <div className="w-2 h-2 bg-orange-500 rounded-full"></div>
                       <span className="text-gray-700">
                         Faces: {faces.join(", ")}
+                      </span>
+                    </div>
+                  </>
+                )}
+                {selectedCourseId && (
+                  <>
+                    <div className="hidden sm:block w-px h-4 bg-gray-300" />
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 bg-indigo-500 rounded-full"></div>
+                      <span className="text-gray-700">
+                        Course: Selected
                       </span>
                     </div>
                   </>

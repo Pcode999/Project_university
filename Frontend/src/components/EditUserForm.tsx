@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { API_URL } from "../constant/constant";
 
 type User = {
   _id: string;
@@ -35,7 +36,8 @@ const EditUserForm = ({ user, onSave, onCancel }: EditUserFormProps) => {
       const formDataUpload = new FormData();
       formDataUpload.append("file", file);
 
-      const res = await fetch("http://localhost:8000/upload-profile-image", {
+      const url = API_URL + `upload-profile-image/${user._id}`;
+      const res = await fetch(url, {
         method: "POST",
         body: formDataUpload,
       });
@@ -53,7 +55,8 @@ const EditUserForm = ({ user, onSave, onCancel }: EditUserFormProps) => {
   const handleSubmit = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch(`http://localhost:8000/users/${user._id}`, {
+      const url = await API_URL + `users/${user._id}`;
+      const res = await fetch(url, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formData),

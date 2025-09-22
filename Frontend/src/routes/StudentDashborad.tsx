@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
+import { API_URL } from "../constant/constant"
 
 type UserData = {
   _id?: string
@@ -38,7 +39,8 @@ const StudentDashboard = () => {
 
     const fetchHistory = async () => {
       try {
-        const res = await fetch("http://localhost:8000/who-sleeping")
+        const url = API_URL + "who-sleeping"
+        const res = await fetch(url)
         const data = await res.json()
         const filtered = data.list.filter((h: SleepRecord) => h.name === parsedUser.username)
         setHistory(filtered)

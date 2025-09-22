@@ -1,0 +1,1 @@
+export const API_URL = 'http://localhost:8000/' //'https://zmp4wlrl-8000.asse.devtunnels.ms/' // OR localhost:8000 for local testing

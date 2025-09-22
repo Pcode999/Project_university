@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Camera, User, Mail, Lock, Shield, Eye, EyeOff } from 'lucide-react'
+import { API_URL } from '../constant/constant'
 
 const SignupPage = () => {
   const navigate = useNavigate()
@@ -12,15 +13,118 @@ const SignupPage = () => {
   const [showPassword, setShowPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [formData, setFormData] = useState({
+    first_name: '',
+    last_name: '',
     username: '',
     email: '',
     password: ''
   })
+  
+  const [validationErrors, setValidationErrors] = useState({
+    first_name: '',
+    last_name: '',
+    username: '',
+    email: '',
+    password: '',
+    profileImage: ''
+  })
+  
+  const [touched, setTouched] = useState({
+    first_name: false,
+    last_name: false,
+    username: false,
+    email: false,
+    password: false,
+    profileImage: false
+  })
+
+  // Validation functions
+  const validateField = (field: string, value: string): string => {
+    switch (field) {
+      case 'first_name':
+        if (!value.trim()) return 'First name is required'
+        if (value.trim().length < 2) return 'First name must be at least 2 characters'
+        if (!/^[a-zA-Z\s]+$/.test(value)) return 'First name can only contain letters and spaces'
+        return ''
+      
+      case 'last_name':
+        if (!value.trim()) return 'Last name is required'
+        if (value.trim().length < 2) return 'Last name must be at least 2 characters'
+        if (!/^[a-zA-Z\s]+$/.test(value)) return 'Last name can only contain letters and spaces'
+        return ''
+      
+      case 'username':
+        if (!value.trim()) return 'Username is required'
+        if (value.length < 3) return 'Username must be at least 3 characters'
+        if (value.length > 20) return 'Username must be less than 20 characters'
+        if (!/^[a-zA-Z0-9_]+$/.test(value)) return 'Username can only contain letters, numbers, and underscore'
+        return ''
+      
+      case 'email':
+        if (!value.trim()) return 'Email is required'
+        if (!/\S+@\S+\.\S+/.test(value)) return 'Please enter a valid email address'
+        return ''
+      
+      case 'password':
+        if (!value) return 'Password is required'
+        if (value.length < 8) return 'Password must be at least 8 characters'
+        if (!/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(value)) return 'Password must contain at least one lowercase letter, one uppercase letter, and one number'
+        return ''
+      
+      default:
+        return ''
+    }
+  }
+
+  const validateProfileImage = (): string => {
+    if (!file && !previewImage) return 'Profile image is required'
+    if (file) {
+      const maxSize = 5 * 1024 * 1024 // 5MB
+      if (file.size > maxSize) return 'Image size must be less than 5MB'
+      const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif']
+      if (!allowedTypes.includes(file.type)) return 'Only JPEG, PNG, and GIF images are allowed'
+    }
+    return ''
+  }
+
+  const validateAllFields = (): boolean => {
+    const newErrors = {
+      first_name: validateField('first_name', formData.first_name),
+      last_name: validateField('last_name', formData.last_name),
+      username: validateField('username', formData.username),
+      email: validateField('email', formData.email),
+      password: validateField('password', formData.password),
+      profileImage: validateProfileImage()
+    }
+    
+    setValidationErrors(newErrors)
+    return !Object.values(newErrors).some(error => error !== '')
+  }
 
   const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
 
+    // Mark field as touched and validate image
+    setTouched(prev => ({ ...prev, profileImage: true }))
+    
+    // Validate file before processing
+    const maxSize = 5 * 1024 * 1024 // 5MB
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif']
+    
+    if (file.size > maxSize) {
+      setValidationErrors(prev => ({ ...prev, profileImage: 'Image size must be less than 5MB' }))
+      return
+    }
+    
+    if (!allowedTypes.includes(file.type)) {
+      setValidationErrors(prev => ({ ...prev, profileImage: 'Only JPEG, PNG, and GIF images are allowed' }))
+      return
+    }
+
+    // Clear any previous validation errors
+    setValidationErrors(prev => ({ ...prev, profileImage: '' }))
+    
     const preview = URL.createObjectURL(file)
     setPreviewImage(preview)
 
@@ -28,8 +132,9 @@ const SignupPage = () => {
     formData.append("file", file)
 
     try {
+      const url = API_URL + "static/" + file.name
       setIsLoading(true)
-      setUploadedImageURL("http://localhost:8000/static/" + file.name)
+      setUploadedImageURL(url)
       setFile(file)
     } catch (err) {
       console.error("Upload error:", err)
@@ -41,23 +146,42 @@ const SignupPage = () => {
 
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }))
+    setTouched(prev => ({ ...prev, [field]: true }))
+    
+    // Real-time validation
+    const fieldError = validateField(field, value)
+    setValidationErrors(prev => ({ ...prev, [field]: fieldError }))
+    
     if (error) setError(null)
   }
 
   const handleSignup = async () => {
-    const { username, email, password } = formData
+    // Mark all fields as touched
+    setTouched({
+      first_name: true,
+      last_name: true,
+      username: true,
+      email: true,
+      password: true,
+      profileImage: true
+    })
 
-    if (!username || !email || !password || !role) {
-      setError("Please fill in all fields.")
+    // Validate all fields
+    if (!validateAllFields()) {
+      setError("Please fix all validation errors before submitting.")
       return
     }
 
-    if (!/\S+@\S+\.\S+/.test(email)) {
-      setError("Please enter a valid email address.")
+    if (!role) {
+      setError("Please select a role.")
       return
     }
+
+    const { first_name, last_name, username, email, password } = formData
 
     const payload = {
+      first_name,
+      last_name,
       username,
       email,
       password,
@@ -67,29 +191,38 @@ const SignupPage = () => {
 
     try {
       setIsLoading(true)
-      const response = await fetch("http://localhost:8000/signup", {
+      const url = await API_URL + "signup"
+      const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       })
 
-      const form = new FormData()
-      if (file) {
-        form.append("file", file)
-      }
-      const sendImage = await fetch("http://localhost:8000/upload-profile-image", {
-        method: "POST",
-        body: form,
-      })
+      if (response.ok) {
+        const signupData = await response.json()
+        const userId = signupData.user_id
 
+        // Upload image with user_id if file exists
+        let imageUploadSuccess = true
+        if (file) {
+          const form = new FormData()
+          form.append("file", file)
+          const sendImage = await fetch(API_URL + `upload-profile-image/${userId}`, {
+            method: "POST",
+            body: form,
+          })
+          imageUploadSuccess = sendImage.ok
+        }
 
+        if (imageUploadSuccess) {
+          // ✅ ดาวน์โหลดภาพหลังจากสมัครแล้ว (บอก backend ทำด้วย)
+          await fetch(API_URL + "startup_refresh") // เรียก endpoint ที่จะโหลดรูปเข้า images ใหม่
 
-      if (response.ok && sendImage.ok) {
-        // ✅ ดาวน์โหลดภาพหลังจากสมัครแล้ว (บอก backend ทำด้วย)
-        await fetch("http://localhost:8000/startup_refresh") // เรียก endpoint ที่จะโหลดรูปเข้า images ใหม่
-
-        alert("Signup successful!")
-        navigate("/")
+          alert("Signup successful!")
+          navigate("/")
+        } else {
+          setError("User created but image upload failed")
+        }
       } else {
         const data = await response.json()
         setError(typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail))
@@ -118,6 +251,14 @@ const SignupPage = () => {
       case 'admin': return 'from-purple-500 to-pink-500'
       default: return 'from-gray-500 to-gray-600'
     }
+  }
+
+  const getFieldError = (field: string): string => {
+    return touched[field as keyof typeof touched] ? validationErrors[field as keyof typeof validationErrors] : ''
+  }
+
+  const hasFieldError = (field: string): boolean => {
+    return touched[field as keyof typeof touched] && validationErrors[field as keyof typeof validationErrors] !== ''
   }
 
   return (
@@ -184,10 +325,64 @@ const SignupPage = () => {
             </div>
             
             <p className="text-sm text-gray-500 mt-3 font-medium">Upload your profile picture</p>
+            {getFieldError('profileImage') && (
+              <p className="mt-2 text-sm text-red-600 text-center">{getFieldError('profileImage')}</p>
+            )}
           </div>
 
           {/* Form fields */}
           <div className="space-y-6">
+            {/* First Name and Last Name Row */}
+            <div className="grid grid-cols-2 gap-4">
+              {/* First Name */}
+              <div className="relative">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  First Name
+                </label>
+                <div className="relative">
+                  <User className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                  <input
+                    type="text"
+                    value={formData.first_name}
+                    onChange={(e) => handleInputChange('first_name', e.target.value)}
+                    className={`w-full pl-12 pr-4 py-4 border rounded-xl focus:ring-2 focus:border-transparent transition-all duration-300 bg-gray-50 hover:bg-white ${
+                      hasFieldError('first_name')
+                        ? 'border-red-300 focus:ring-red-500'
+                        : 'border-gray-200 focus:ring-emerald-500'
+                    }`}
+                    placeholder="First name"
+                  />
+                </div>
+                {getFieldError('first_name') && (
+                  <p className="mt-1 text-sm text-red-600">{getFieldError('first_name')}</p>
+                )}
+              </div>
+
+              {/* Last Name */}
+              <div className="relative">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Last Name
+                </label>
+                <div className="relative">
+                  <User className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                  <input
+                    type="text"
+                    value={formData.last_name}
+                    onChange={(e) => handleInputChange('last_name', e.target.value)}
+                    className={`w-full pl-12 pr-4 py-4 border rounded-xl focus:ring-2 focus:border-transparent transition-all duration-300 bg-gray-50 hover:bg-white ${
+                      hasFieldError('last_name')
+                        ? 'border-red-300 focus:ring-red-500'
+                        : 'border-gray-200 focus:ring-emerald-500'
+                    }`}
+                    placeholder="Last name"
+                  />
+                </div>
+                {getFieldError('last_name') && (
+                  <p className="mt-1 text-sm text-red-600">{getFieldError('last_name')}</p>
+                )}
+              </div>
+            </div>
+
             {/* Username */}
             <div className="relative">
               <label className="block text-sm font-semibold text-gray-700 mb-2">
@@ -199,10 +394,17 @@ const SignupPage = () => {
                   type="text"
                   value={formData.username}
                   onChange={(e) => handleInputChange('username', e.target.value)}
-                  className="w-full pl-12 pr-4 py-4 border border-gray-200 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all duration-300 bg-gray-50 hover:bg-white"
+                  className={`w-full pl-12 pr-4 py-4 border rounded-xl focus:ring-2 focus:border-transparent transition-all duration-300 bg-gray-50 hover:bg-white ${
+                    hasFieldError('username')
+                      ? 'border-red-300 focus:ring-red-500'
+                      : 'border-gray-200 focus:ring-emerald-500'
+                  }`}
                   placeholder="Choose a username"
                 />
               </div>
+              {getFieldError('username') && (
+                <p className="mt-1 text-sm text-red-600">{getFieldError('username')}</p>
+              )}
             </div>
 
             {/* Email */}
@@ -216,10 +418,17 @@ const SignupPage = () => {
                   type="email"
                   value={formData.email}
                   onChange={(e) => handleInputChange('email', e.target.value)}
-                  className="w-full pl-12 pr-4 py-4 border border-gray-200 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all duration-300 bg-gray-50 hover:bg-white"
+                  className={`w-full pl-12 pr-4 py-4 border rounded-xl focus:ring-2 focus:border-transparent transition-all duration-300 bg-gray-50 hover:bg-white ${
+                    hasFieldError('email')
+                      ? 'border-red-300 focus:ring-red-500'
+                      : 'border-gray-200 focus:ring-emerald-500'
+                  }`}
                   placeholder="Enter your email"
                 />
               </div>
+              {getFieldError('email') && (
+                <p className="mt-1 text-sm text-red-600">{getFieldError('email')}</p>
+              )}
             </div>
 
             {/* Password */}
@@ -233,7 +442,11 @@ const SignupPage = () => {
                   type={showPassword ? "text" : "password"}
                   value={formData.password}
                   onChange={(e) => handleInputChange('password', e.target.value)}
-                  className="w-full pl-12 pr-12 py-4 border border-gray-200 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all duration-300 bg-gray-50 hover:bg-white"
+                  className={`w-full pl-12 pr-12 py-4 border rounded-xl focus:ring-2 focus:border-transparent transition-all duration-300 bg-gray-50 hover:bg-white ${
+                    hasFieldError('password')
+                      ? 'border-red-300 focus:ring-red-500'
+                      : 'border-gray-200 focus:ring-emerald-500'
+                  }`}
                   placeholder="Create a secure password"
                 />
                 <button
@@ -244,6 +457,9 @@ const SignupPage = () => {
                   {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                 </button>
               </div>
+              {getFieldError('password') && (
+                <p className="mt-1 text-sm text-red-600">{getFieldError('password')}</p>
+              )}
             </div>
 
             {/* Role */}

@@ -45,6 +45,7 @@ client = MongoClient("mongodb://localhost:27017/")
 db = client["Project_sleep_classroom"]
 users_collection = db["users"]
 behavior_collection = db["student_behavior_report"]
+courses_collection = db["courses"]
 
 # ===== AI components =====
 face_recognizer = FaceRecognizer()
@@ -52,6 +53,7 @@ sleep_detector = SleepDetector()
 
 # ===== Stream state =====
 is_streaming: bool = False
+current_course_id: str | None = None  # Selected course for sleep detection
 latest_status: Dict[str, Any] = {
     "label": None,
     "confidence": None,
@@ -76,6 +78,8 @@ class User(BaseModel):
     password: str
     profileImage: str
     role: str
+    first_name: str
+    last_name: str
 
 class UserLogin(BaseModel):
     username: str
@@ -85,7 +89,15 @@ class Behavior(BaseModel):
     student_id: str
     penalty: int
     created_at: datetime
-    
+
+class Course(BaseModel):
+    course_name: str
+    sleeping_students: List[str] = []  # List of user_ids who sleep in this course
+    created_at: datetime = None
+    updated_at: datetime = None
+
+class CourseSelectionData(BaseModel):
+    course_id: str = None  # Allow None to deselect
     
 # Sleep detection route
 
@@ -101,6 +113,8 @@ def serialize_user(user):
         "password": user["password"],
         "profileImage": user["profileImage"],
         "role": user["role"],
+        "first_name": user.get("first_name", ""),
+        "last_name": user.get("last_name", ""),
     }
 
 def serialize_behavior(behavior):
@@ -112,8 +126,47 @@ def serialize_behavior(behavior):
         "status": behavior.get("status", "active"),
     }
 
+def serialize_course(course):
+    return {
+        "_id": str(course["_id"]),
+        "course_name": course["course_name"],
+        "sleeping_students": course.get("sleeping_students", []),
+        "created_at": course.get("created_at"),
+        "updated_at": course.get("updated_at"),
+    }
+
 def _clip(v, lo, hi):
     return max(lo, min(int(v), hi))
+
+def get_user_display_name(user_id: str) -> str:
+    """
+    Get user's display name (first_name + last_name) by user_id.
+    Returns the formatted name or the user_id if not found.
+    """
+    try:
+        # Handle ObjectId format
+        if len(user_id) == 24:
+            user = users_collection.find_one({"_id": ObjectId(user_id)})
+        else:
+            user = users_collection.find_one({"_id": user_id})
+        
+        if user:
+            first_name = user.get("first_name", "").strip()
+            last_name = user.get("last_name", "").strip()
+            
+            if first_name and last_name:
+                return f"{first_name} {last_name}"
+            elif first_name:
+                return first_name
+            elif last_name:
+                return last_name
+            else:
+                # Fallback to username if no first/last name
+                return user.get("username", user_id)
+        else:
+            return user_id
+    except Exception:
+        return user_id
 
 def extract_eye_crops(frame_bgr) -> List[np.ndarray]:
     """ คืนลิสต์รูปตา [left, right] จากเฟรม ถ้าไม่เจอ → [] """
@@ -172,35 +225,169 @@ def predict_from_eyes(frame_bgr, min_conf_for_closed=70.0):
 class WhoSleepData(BaseModel):
     name: str
     time: str
+    course_id: str = None  # Optional course ID
     
 class DeleteSleepData(BaseModel):
     name: str
 
-sleepingList: List = []
+# Store recent sleep detection history (for real-time dashboard updates)
+recent_sleep_detections: List = []
 
 @app.get('/who-sleeping')
-async def get_who_sleeping():
-    return {"list": sleepingList}
+async def get_who_sleeping(course_id: str = None):
+    """
+    Get sleeping students from courses or recent detections.
+    If course_id is provided, get sleeping students from that specific course.
+    Otherwise, get recent sleep detections across all courses.
+    """
+    if course_id:
+        try:
+            # Get sleeping students from specific course
+            course = courses_collection.find_one({"_id": ObjectId(course_id)})
+            if not course:
+                raise HTTPException(status_code=404, detail="Course not found")
+            
+            sleeping_students = []
+            for user_id in course.get("sleeping_students", []):
+                user = users_collection.find_one({"_id": ObjectId(user_id)})
+                if user:
+                    display_name = get_user_display_name(user_id)
+                    sleeping_students.append({
+                        "user_id": user_id,
+                        "name": display_name,
+                        "username": user.get("username", ""),
+                        "added_to_course": course.get("updated_at", "")
+                    })
+            
+            return {"course_id": course_id, "course_name": course["course_name"], "sleeping_students": sleeping_students}
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error fetching course sleeping students: {str(e)}")
+    else:
+        # Return recent sleep detections for real-time dashboard
+        return {"recent_detections": recent_sleep_detections}
+
+@app.get('/who-sleeping/current-course')
+async def get_who_sleeping_current_course():
+    """Get sleeping students from the currently selected course for detection."""
+    global current_course_id
+    if not current_course_id:
+        return {"message": "No course selected for detection", "sleeping_students": []}
+    
+    return await get_who_sleeping(current_course_id)
+
 @app.delete('/who-sleeping')
 async def delete_who_sleeping(data: DeleteSleepData):
-    global sleepingList
-    sleepingList = [entry for entry in sleepingList if entry["name"] != data.name]
-    return {"message": "Deleted from sleeping list", "list": sleepingList}
+    """Remove student from recent detections list."""
+    global recent_sleep_detections
+    recent_sleep_detections = [entry for entry in recent_sleep_detections if entry["name"] != data.name]
+    return {"message": "Removed from recent detections", "recent_detections": recent_sleep_detections}
+
+@app.delete('/who-sleeping/course/{course_id}/student/{user_id}')
+async def remove_student_from_course_sleeping_list(course_id: str, user_id: str):
+    """Remove a student from a specific course's sleeping students list."""
+    try:
+        course = courses_collection.find_one({"_id": ObjectId(course_id)})
+        if not course:
+            raise HTTPException(status_code=404, detail="Course not found")
+        
+        # Remove user from sleeping_students
+        result = courses_collection.update_one(
+            {"_id": ObjectId(course_id)},
+            {
+                "$pull": {"sleeping_students": user_id},
+                "$set": {"updated_at": datetime.now()}
+            }
+        )
+        
+        if result.modified_count > 0:
+            user = users_collection.find_one({"_id": ObjectId(user_id)})
+            display_name = get_user_display_name(user_id) if user else user_id
+            return {"message": f"Removed {display_name} from course sleeping list"}
+        else:
+            return {"message": "Student was not in the course sleeping list"}
+            
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error removing student: {str(e)}")
 
 @app.post('/who-sleeping')
 async def post_who_sleeping(data: WhoSleepData):
-    global sleepingList
-    sleepingList.append({"name": data.name, "time": data.time})
-    if len(sleepingList) > 5:
-        sleepingList = sleepingList[-5:]
-    return {"message": "Added to sleeping list", "list": sleepingList}
+    """Add detected sleeping student to course and recent detections."""
+    global recent_sleep_detections
+    
+    # Add to recent detections list (for real-time dashboard)
+    detection_entry = {"name": data.name, "time": data.time}
+    recent_sleep_detections.append(detection_entry)
+    if len(recent_sleep_detections) > 10:  # Keep last 10 detections
+        recent_sleep_detections = recent_sleep_detections[-10:]
+    
+    # If course_id is provided, add the student to the course's sleeping_students list
+    if data.course_id:
+        try:
+            # Find user by display name (reverse lookup user_id)
+            name_parts = data.name.split(' ', 1)
+            if len(name_parts) == 2:
+                first_name, last_name = name_parts
+                user = users_collection.find_one({
+                    "first_name": {"$regex": f"^{first_name}$", "$options": "i"},
+                    "last_name": {"$regex": f"^{last_name}$", "$options": "i"}
+                })
+            else:
+                # Try to find by username or first_name only
+                user = users_collection.find_one({
+                    "$or": [
+                        {"username": {"$regex": f"^{data.name}$", "$options": "i"}},
+                        {"first_name": {"$regex": f"^{data.name}$", "$options": "i"}}
+                    ]
+                })
+            
+            if user:
+                user_id = str(user["_id"])
+                # Add user to course's sleeping_students list
+                result = courses_collection.update_one(
+                    {"_id": ObjectId(data.course_id)},
+                    {
+                        "$addToSet": {"sleeping_students": user_id},
+                        "$set": {"updated_at": datetime.now()}
+                    }
+                )
+                print(f"Added user {data.name} (ID: {user_id}) to course {data.course_id} sleeping list")
+                
+                # Get updated course info for response
+                course = courses_collection.find_one({"_id": ObjectId(data.course_id)})
+                return {
+                    "message": "Added to course sleeping list", 
+                    "course_name": course["course_name"] if course else "Unknown",
+                    "student_name": data.name,
+                    "recent_detections": recent_sleep_detections
+                }
+            else:
+                print(f"Could not find user with name: {data.name}")
+                return {
+                    "message": "Added to recent detections only (user not found in database)", 
+                    "recent_detections": recent_sleep_detections
+                }
+                
+        except Exception as e:
+            print(f"Error adding student to course: {str(e)}")
+            return {
+                "message": f"Error adding to course: {str(e)}", 
+                "recent_detections": recent_sleep_detections
+            }
+    else:
+        return {
+            "message": "Added to recent detections (no course selected)", 
+            "recent_detections": recent_sleep_detections
+        }
 
 @app.post("/signup")
 async def signup(user: User):
     if users_collection.find_one({"email": user.email}) or users_collection.find_one({"username": user.username}):
         raise HTTPException(status_code=400, detail="Username or email already exists")
-    users_collection.insert_one(user.dict())
-    return {"message": "User registered successfully"}
+    result = users_collection.insert_one(user.dict())
+    return {
+        "message": "User registered successfully",
+        "user_id": str(result.inserted_id)
+    }
 
 @app.post("/login")
 async def login(user: UserLogin):
@@ -214,6 +401,8 @@ async def login(user: UserLogin):
         "email": found["email"],
         "profileImage": found["profileImage"],
         "role": found["role"],
+        "first_name": found.get("first_name", ""),
+        "last_name": found.get("last_name", ""),
     }
 
 @app.get("/users")
@@ -237,6 +426,8 @@ async def get_student_by_username(username: str):
         "email": user["email"],
         "profileImage": user["profileImage"],
         "role": user["role"],
+        "first_name": user.get("first_name", ""),
+        "last_name": user.get("last_name", ""),
     }
 
 @app.put("/users/{user_id}")
@@ -248,9 +439,27 @@ async def update_user(user_id: str, user: User):
 
 @app.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user(user_id: str):
+    # First verify the user exists before deletion
+    user = users_collection.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Delete the user from database
     result = users_collection.delete_one({"_id": ObjectId(user_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
+    
+    # Delete associated profile image if it exists
+    # Check for common image extensions that might be used for this user
+    for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff']:
+        image_path = f"static/{user_id}{ext}"
+        if os.path.exists(image_path):
+            try:
+                os.remove(image_path)
+                print(f"Deleted profile image: {image_path}")
+            except Exception as e:
+                print(f"Warning: Could not delete image {image_path}: {str(e)}")
+                # Continue with user deletion even if image deletion fails
 
 @app.get("/behavior-reports")
 async def get_all_behavior_reports():
@@ -316,16 +525,125 @@ async def delete_behavior_report(report_id: str):
         raise HTTPException(status_code=404, detail="Behavior report not found")
     return {"message": "Behavior report deleted successfully"}
 
-@app.post("/upload-profile-image")
-async def upload_profile_image(file: UploadFile = File(...)):
+# ===== Course Management =====
+
+@app.get("/courses")
+async def get_courses():
+    courses = courses_collection.find()
+    return [serialize_course(c) for c in courses]
+
+@app.get("/courses/{course_id}")
+async def get_course(course_id: str):
+    course = courses_collection.find_one({"_id": ObjectId(course_id)})
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    return serialize_course(course)
+
+@app.post("/courses")
+async def create_course(course: Course):
+    course_data = course.dict()
+    course_data["created_at"] = datetime.now()
+    course_data["updated_at"] = datetime.now()
+    
+    result = courses_collection.insert_one(course_data)
+    new_course = courses_collection.find_one({"_id": result.inserted_id})
+    return serialize_course(new_course)
+
+@app.put("/courses/{course_id}")
+async def update_course(course_id: str, course: Course):
+    course_data = course.dict()
+    course_data["updated_at"] = datetime.now()
+    
+    result = courses_collection.update_one(
+        {"_id": ObjectId(course_id)}, 
+        {"$set": course_data}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    updated_course = courses_collection.find_one({"_id": ObjectId(course_id)})
+    return serialize_course(updated_course)
+
+@app.delete("/courses/{course_id}")
+async def delete_course(course_id: str):
+    result = courses_collection.delete_one({"_id": ObjectId(course_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Course not found")
+    return {"message": "Course deleted successfully"}
+
+@app.post("/courses/{course_id}/add-sleeping-student/{user_id}")
+async def add_sleeping_student_to_course(course_id: str, user_id: str):
+    # Verify course exists
+    course = courses_collection.find_one({"_id": ObjectId(course_id)})
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    # Verify user exists
+    user = users_collection.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Add user to sleeping_students if not already there
+    result = courses_collection.update_one(
+        {"_id": ObjectId(course_id)},
+        {"$addToSet": {"sleeping_students": user_id}, "$set": {"updated_at": datetime.now()}}
+    )
+    
+    updated_course = courses_collection.find_one({"_id": ObjectId(course_id)})
+    return serialize_course(updated_course)
+
+@app.delete("/courses/{course_id}/remove-sleeping-student/{user_id}")
+async def remove_sleeping_student_from_course(course_id: str, user_id: str):
+    # Verify course exists
+    course = courses_collection.find_one({"_id": ObjectId(course_id)})
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    # Remove user from sleeping_students
+    result = courses_collection.update_one(
+        {"_id": ObjectId(course_id)},
+        {"$pull": {"sleeping_students": user_id}, "$set": {"updated_at": datetime.now()}}
+    )
+    
+    updated_course = courses_collection.find_one({"_id": ObjectId(course_id)})
+    return serialize_course(updated_course)
+
+@app.post("/upload-profile-image/{user_id}")
+async def upload_profile_image(user_id: str, file: UploadFile = File(...)):
     try:
-        name = file.filename.lower().strip()
-        path = f"static/{name}"
+        # Verify user exists
+        user = users_collection.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Get file extension from original filename
+        original_name = file.filename.lower().strip()
+        file_extension = os.path.splitext(original_name)[1]
+        
+        # Use user_id as filename with original extension
+        new_filename = f"{user_id}{file_extension}"
+        path = f"static/{new_filename}"
+        
+        # Remove any existing profile images for this user
+        # Check for common image extensions
+        for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+            old_path = f"static/{user_id}{ext}"
+            if os.path.exists(old_path):
+                os.remove(old_path)
+        
+        # Save the new file
         with open(path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        return {"image_url": f"http://localhost:8000/static/{name}"}
-    except:
-        raise HTTPException(status_code=500, detail="Upload failed")
+        
+        # Update user's profileImage field in database
+        users_collection.update_one(
+            {"_id": ObjectId(user_id)}, 
+            {"$set": {"profileImage": f"http://localhost:8000/static/{new_filename}"}}
+        )
+        
+        return {"image_url": f"http://localhost:8000/static/{new_filename}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 # ====== Process single frame (base64), เผื่อเรียกทดสอบเดี่ยว ======
 @app.post("/process_frame")
@@ -340,14 +658,23 @@ async def process_frame(frame: FrameData):
         label, conf, per_eye = predict_from_eyes(img)
         face_locations, names = face_recognizer.recognize_faces(img)
 
+        # Convert user_ids to display names for the response
+        recognized_faces = []
+        for (t, r, b, l), n in zip(face_locations, names):
+            display_name = n
+            if n and n not in ["Unknown", "Error"]:
+                display_name = get_user_display_name(n)
+            recognized_faces.append({
+                "name": n,                  # original user_id
+                "display_name": display_name,  # actual first_name + last_name
+                "box": (l, t, r, b)
+            })
+
         result = {
             "status": "Frame processed",
             "prediction": {"label": label, "confidence": conf},
             "per_eye": per_eye,
-            "recognized_faces": [
-                {"name": n, "box": (l, t, r, b)}
-                for (t, r, b, l), n in zip(face_locations, names)
-            ],
+            "recognized_faces": recognized_faces,
         }
         return result
     except Exception as e:
@@ -371,7 +698,35 @@ async def stop_stream():
 
 @app.get("/stream_status")
 async def get_stream_status():
-    return JSONResponse({"is_streaming": is_streaming, "status": latest_status})
+    return JSONResponse({
+        "is_streaming": is_streaming, 
+        "status": latest_status,
+        "current_course_id": current_course_id
+    })
+
+@app.post("/set_course_for_detection")
+async def set_course_for_detection(data: CourseSelectionData):
+    global current_course_id
+    current_course_id = data.course_id
+    if current_course_id:
+        # Verify course exists
+        course = courses_collection.find_one({"_id": ObjectId(current_course_id)})
+        if not course:
+            raise HTTPException(status_code=404, detail="Course not found")
+        return {"message": f"Course set for sleep detection", "course_id": current_course_id}
+    else:
+        return {"message": "Course selection cleared", "course_id": None}
+
+@app.get("/get_current_course")
+async def get_current_course():
+    if current_course_id:
+        course = courses_collection.find_one({"_id": ObjectId(current_course_id)})
+        if course:
+            return {"course": serialize_course(course)}
+        else:
+            return {"course": None}
+    else:
+        return {"course": None}
 
 async def _open_camera():
     cap = cv2.VideoCapture(0)
@@ -442,9 +797,14 @@ async def video_feed(request: Request):
                     except Exception:
                         label, conf, per_eye = "Unknown", 0.0, []
 
+                    # Convert user_id to display name (first_name + last_name)
+                    display_name = name
+                    if name and name != "Unknown" and name != "Error":
+                        display_name = get_user_display_name(name)
+
                     # ---- นับเวลาต่อเนื่องรายบุคคล ----
                     now = time.time()
-                    key = name if name else "Unknown"
+                    key = display_name if display_name else "Unknown"
                     prev = sleep_timers.get(key)
 
                     display_label = label
@@ -461,9 +821,14 @@ async def video_feed(request: Request):
                                 async with httpx.AsyncClient() as client:
                                     try:
                                         print(f"📢 แจ้งเตือน {key} หลับแล้ว")
+                                        sleep_data = {
+                                            "name": key, 
+                                            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                            "course_id": current_course_id  # Pass the selected course ID
+                                        }
                                         await client.post(
                                             "http://localhost:8000/who-sleeping",
-                                            json={"name": key, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+                                            json=sleep_data
                                         )
                                     except Exception:
                                         pass
@@ -473,7 +838,8 @@ async def video_feed(request: Request):
                         sleep_timers[key] = None
 
                     faces_info.append({
-                        "name": name,
+                        "name": name,                   # original user_id from face recognition
+                        "display_name": display_name,   # actual first_name + last_name
                         "label": label,                 # label จากโมเดล
                         "display_label": display_label, # label ที่โชว์ (Sleep/Closed/Open)
                         "sleep_elapsed": round(sleep_elapsed, 2),
@@ -497,7 +863,7 @@ async def video_feed(request: Request):
                     cv2.rectangle(frame, (left, top), (right, bottom), box_color, 2)
 
                     # แถบหัว: ชื่อ | สถานะ (%)
-                    head = f"{name} | {display_label} ({conf:.0f}%)"
+                    head = f"{display_name} | {display_label} ({conf:.0f}%)"
                     (tw, th), _ = cv2.getTextSize(head, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
                     pad = 6
                     y_text = max(0, top - th - 10)

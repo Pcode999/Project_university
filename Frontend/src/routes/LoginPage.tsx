@@ -1,5 +1,6 @@
 import { useNavigate } from "react-router-dom"
 import { useState } from "react"
+import { API_URL } from "../constant/constant"
 
 const LoginPage = () => {
   const navigate = useNavigate()
@@ -16,9 +17,10 @@ const LoginPage = () => {
 
     setIsLoading(true)
     setError(null)
-
+ 
     try {
-      const res = await fetch("http://localhost:8000/login", {
+      const url = API_URL + "login"
+      const res = await fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
