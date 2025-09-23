@@ -1,1 +1,5 @@
-export const API_URL = 'http://localhost:8000/' //'https://zmp4wlrl-8000.asse.devtunnels.ms/' // OR localhost:8000 for local testing
+// Development
+// export const API_URL = 'http://localhost:8000/'
+
+// Production - EC2 deployment  
+export const API_URL = 'http://ec2-54-252-187-88.ap-southeast-2.compute.amazonaws.com/api/'

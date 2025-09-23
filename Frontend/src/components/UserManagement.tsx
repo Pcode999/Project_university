@@ -18,7 +18,7 @@ const UserManagement = () => {
 
   const fetchUsers = async () => {
     try {
-      const url = await API_URL + "users";
+      const url = API_URL + "users";
       const res = await fetch(url);
       const data = await res.json();
       setUsers(data);
@@ -33,7 +33,7 @@ const UserManagement = () => {
 
   const handleDelete = async (userId: string) => {
     try {
-      const url = await API_URL + `users/${userId}`;
+      const url = API_URL + `users/${userId}`;
       const res = await fetch(url, {
         method: "DELETE",
       });

@@ -55,7 +55,7 @@ const EditUserForm = ({ user, onSave, onCancel }: EditUserFormProps) => {
   const handleSubmit = async () => {
     setIsLoading(true);
     try {
-      const url = await API_URL + `users/${user._id}`;
+      const url = API_URL + `users/${user._id}`;
       const res = await fetch(url, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },

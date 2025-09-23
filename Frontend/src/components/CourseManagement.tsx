@@ -30,7 +30,7 @@ const CourseManagement = () => {
 
   const fetchCourses = async () => {
     try {
-      const url = await API_URL + "courses";
+      const url = API_URL + "courses";
       const res = await fetch(url);
       const data = await res.json();
       setCourses(data);
@@ -41,7 +41,7 @@ const CourseManagement = () => {
 
   const fetchUsers = async () => {
     try {
-      const url = await API_URL + "users";
+      const url = API_URL + "users";
       const res = await fetch(url);
       const data = await res.json();
       setUsers(data);
@@ -58,7 +58,7 @@ const CourseManagement = () => {
   const handleAddCourse = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const url = await API_URL + "courses";
+      const url = API_URL + "courses";
       const res = await fetch(url, {
         method: "POST",
         headers: {
@@ -81,7 +81,7 @@ const CourseManagement = () => {
 
   const handleDeleteCourse = async (courseId: string) => {
     try {
-      const url = await API_URL + `courses/${courseId}`;
+      const url = API_URL + `courses/${courseId}`;
       const res = await fetch(url, {
         method: "DELETE",
       });
