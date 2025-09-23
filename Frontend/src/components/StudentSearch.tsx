@@ -4,17 +4,7 @@ import CourseSelector from "./CourseSelector";
 
 const API_BASE_URL = API_URL;
 
-type StreamStatus = {
-  is_streaming: boolean;
-  status: {
-    label: string | null;
-    confidence: number | null;
-    faces: string[];
-    per_eye?: { eye: "left" | "right"; label: string; conf: number }[];
-    timestamp: number | null;
-    snapshot?: string | null;
-  };
-};
+// Removed unused StreamStatus type
 
 type SleepListItem = {
   name: string;

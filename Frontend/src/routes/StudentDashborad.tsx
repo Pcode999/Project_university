@@ -17,7 +17,7 @@ type SleepRecord = {
 
 const StudentDashboard = () => {
   const [user, setUser] = useState<UserData | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [_loading, setLoading] = useState(true)
   const [history, setHistory] = useState<SleepRecord[]>([])
   const navigate = useNavigate()
 
