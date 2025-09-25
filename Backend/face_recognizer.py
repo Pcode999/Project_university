@@ -12,13 +12,13 @@ class FaceRecognizer:
         self.load_known_faces()
         
         # เพิ่ม frame_skip เพื่อลด delay (ประมวลผลทุก 3 เฟรม)
-        self.frame_skip = 8
+        self.frame_skip = 7
         self.frame_count = 0
         self.last_result = ([], [])
         
         # เพิ่มตัวแปรสำหรับปรับการประมวลผล
         self.process_scale = 0.25  # ลดขนาดเพิ่มเติม
-        self.max_faces = 5         # จำกัดจำนวนหน้าที่ประมวลผล
+        self.max_faces = 4         # จำกัดจำนวนหน้าที่ประมวลผล
     
     def load_known_faces(self):
         print("🔄 โหลดใบหน้าที่รู้จักจาก:", self.image_folder)

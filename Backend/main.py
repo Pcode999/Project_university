@@ -1105,6 +1105,297 @@ async def video_feed(request: Request):
         headers=headers,
     )
 
+# ===== New Frame Processing Endpoint =====
+
+def is_user_in_course(user_id: str, course_id: str) -> bool:
+    """Check if user is a member of the selected course."""
+    if not course_id:
+        return False
+    try:
+        course = courses_collection.find_one({"_id": ObjectId(course_id)})
+        if course:
+            return user_id in course.get("sleeping_students", [])
+        return False
+    except:
+        return False
+
+@app.post("/get_processed_frame")
+async def get_processed_frame(frame_data: FrameData):
+    """Process a single frame sent from frontend with sleep detection, face recognition, and draw all detection boxes."""
+    global is_streaming, latest_status, sleep_start_time, sleep_timers, current_course_id
+    
+    if not is_streaming:
+        raise HTTPException(status_code=400, detail="Stream not started")
+
+    try:
+        # Decode base64 image from frontend
+        if not frame_data.image.startswith('data:image'):
+            raise HTTPException(status_code=400, detail="Invalid base64 format")
+        
+        img_data = base64.b64decode(frame_data.image.split(',')[1])
+        img = Image.open(BytesIO(img_data))
+        frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+
+        # Check course membership for filtering
+        show_warning = False
+        warning_message = ""
+        
+        if not current_course_id:
+            show_warning = True
+            warning_message = "Please select a course first"
+
+        # 1) Find faces + names
+        try:
+            face_locations, names = face_recognizer.recognize_faces(frame)
+        except Exception:
+            face_locations, names = [], []
+
+        # Filter faces by course membership if course is selected
+        filtered_faces = []
+        filtered_names = []
+        
+        if current_course_id:
+            course_members_detected = False
+            for (face_loc, name) in zip(face_locations, names):
+                if name and name not in ["Unknown", "Error"]:
+                    if is_user_in_course(name, current_course_id):
+                        filtered_faces.append(face_loc)
+                        filtered_names.append(name)
+                        course_members_detected = True
+                else:
+                    # Include unknown faces but don't count them as course members
+                    filtered_faces.append(face_loc)
+                    filtered_names.append(name)
+            
+            if not course_members_detected and face_locations:
+                show_warning = True
+                warning_message = "No course members detected"
+                
+            face_locations = filtered_faces
+            names = filtered_names
+
+        faces_info = []  # Store results per person
+
+        # 2) Process each detected face and draw detection boxes
+        for (top, right, bottom, left), name in zip(face_locations, names):
+            # Prevent index out of bounds
+            top = max(0, top)
+            left = max(0, left)
+            bottom = min(frame.shape[0]-1, bottom)
+            right = min(frame.shape[1]-1, right)
+
+            face_crop = frame[top:bottom, left:right].copy()
+            try:
+                label, conf, per_eye = predict_from_eyes(face_crop)
+            except Exception:
+                label, conf, per_eye = "Unknown", 0.0, []
+
+            # Convert user_id to display name (first_name + last_name)
+            display_name = name
+            if name and name != "Unknown" and name != "Error":
+                display_name = get_user_display_name(name)
+
+            # ---- Count continuous time per person ----
+            now = time.time()
+            key = display_name if display_name else "Unknown"
+            prev = sleep_timers.get(key)
+
+            display_label = label
+            sleep_elapsed = 0.0
+
+            if label.lower() == "closed":
+                if prev is None:
+                    sleep_timers[key] = now
+                    sleep_elapsed = 0.0
+                else:
+                    sleep_elapsed = now - prev
+                    if sleep_elapsed >= sleep_threshold_sec:
+                        display_label = "Sleep"  # Change label when threshold reached
+                        # Send sleep notification
+                        async with httpx.AsyncClient() as client:
+                            try:
+                                print(f"📢 Alert {key} is sleeping")
+                                sleep_data = {
+                                    "name": key, 
+                                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    "course_id": current_course_id
+                                }
+                                await client.post(
+                                    "http://localhost:8000/who-sleeping",
+                                    json=sleep_data
+                                )
+                            except Exception:
+                                pass
+            else:
+                # Eyes open - reset timer
+                sleep_timers[key] = None
+
+            faces_info.append({
+                "name": name,                   # original user_id from face recognition
+                "display_name": display_name,   # actual first_name + last_name
+                "label": label,                 # label from model
+                "display_label": display_label, # label to show (Sleep/Closed/Open)
+                "sleep_elapsed": round(sleep_elapsed, 2),
+                "confidence": float(conf),
+                "box": [int(left), int(top), int(right), int(bottom)],
+                "per_eye": per_eye
+            })
+
+            # ===== DRAW ALL DETECTION BOXES AND DETAILS ON THE FRAME =====
+            
+            # Box/text background colors based on detection state
+            is_sleep = (display_label.lower() == "sleep")
+            is_closed = (display_label.lower() == "closed")
+            if is_sleep:
+                box_color = (0, 0, 255)     # Red: Sleep
+            elif is_closed:
+                box_color = (40, 40, 220)   # Dark blue: Closed (counting time)
+            else:
+                box_color = (36, 255, 12)   # Green: Open/others
+            txt_color = (255, 255, 255)
+
+            # Draw main face bounding box
+            cv2.rectangle(frame, (left, top), (right, bottom), box_color, 3)
+
+            # Header bar: name | status (%)
+            head = f"{display_name} | {display_label} ({conf:.0f}%)"
+            (tw, th), _ = cv2.getTextSize(head, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+            pad = 8
+            y_text = max(0, top - th - 15)
+            
+            # Draw header background
+            cv2.rectangle(
+                frame,
+                (left, y_text - pad),
+                (left + tw + pad*2, y_text + th + pad),
+                box_color, -1
+            )
+            
+            # Draw header text
+            cv2.putText(
+                frame, head,
+                (left + pad, y_text + th),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, txt_color, 2, cv2.LINE_AA
+            )
+
+            # Per-eye details below header
+            y_line = y_text + th + pad + 25
+            for e in (per_eye or []):
+                eye_line = f"{e['eye']}: {e['label']} ({e['conf']:.0f}%)"
+                cv2.putText(
+                    frame, eye_line,
+                    (left, min(y_line, bottom - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2, cv2.LINE_AA
+                )
+                y_line += 25
+
+            # Show sleep countdown timer (if counting down to sleep)
+            if 0.0 < sleep_elapsed < sleep_threshold_sec:
+                remain = max(0.0, sleep_threshold_sec - sleep_elapsed)
+                countdown_text = f"Sleep in {remain:.1f}s"
+                cv2.putText(
+                    frame, countdown_text,
+                    (left, min(y_line, bottom - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 215, 255), 2, cv2.LINE_AA
+                )
+                y_line += 25
+
+            # Draw status indicator circle on top-right of face box
+            indicator_x = right - 25
+            indicator_y = top + 25
+            if indicator_x > left and indicator_y < bottom:
+                # Draw circle background
+                cv2.circle(frame, (indicator_x, indicator_y), 15, (0, 0, 0), -1)  # Black background
+                cv2.circle(frame, (indicator_x, indicator_y), 13, box_color, -1)   # Colored fill
+                cv2.circle(frame, (indicator_x, indicator_y), 15, box_color, 2)    # Colored border
+                
+                # Draw status symbol
+                if is_sleep:
+                    # Draw sleep symbol (zzz)
+                    cv2.putText(frame, "Z", (indicator_x - 8, indicator_y + 6), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, txt_color, 2, cv2.LINE_AA)
+                elif is_closed:
+                    # Draw closed eye symbol
+                    cv2.putText(frame, "-", (indicator_x - 8, indicator_y + 6), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 1.2, txt_color, 3, cv2.LINE_AA)
+                else:
+                    # Draw open eye symbol
+                    cv2.putText(frame, "O", (indicator_x - 8, indicator_y + 6), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, txt_color, 2, cv2.LINE_AA)
+
+        # Add warning message overlay if needed
+        if show_warning and warning_message:
+            # Create semi-transparent overlay at bottom
+            h, w = frame.shape[:2]
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (20, h-100), (w-20, h-20), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.8, frame, 0.2, 0, frame)
+            
+            # Add warning text
+            cv2.putText(frame, warning_message, (30, h-50), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3, cv2.LINE_AA)
+
+        # Add system status overlay at top-left
+        status_text = f"Faces: {len(faces_info)} | Course: {'Selected' if current_course_id else 'None'}"
+        cv2.putText(frame, status_text, (20, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        
+        # Add background for status text
+        (status_w, status_h), _ = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+        cv2.rectangle(frame, (15, 5), (25 + status_w, 35 + status_h), (0, 0, 0), -1)
+        cv2.putText(frame, status_text, (20, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+
+        # 3) Update overall status (in case no faces)
+        if faces_info:
+            main_label = faces_info[0]["display_label"]
+            main_conf = faces_info[0]["confidence"]
+            main_names = [fi["display_name"] for fi in faces_info if fi["display_name"]]
+        else:
+            try:
+                main_label, main_conf, _ = predict_from_eyes(frame)
+            except Exception:
+                main_label, main_conf = "Unknown", 0.0
+            main_names = []
+
+            # Run time at overall level
+            now = time.time()
+            if main_label.lower() == "closed":
+                if sleep_start_time is None:
+                    sleep_start_time = now
+                elif now - sleep_start_time >= sleep_threshold_sec:
+                    main_label = "Sleep"
+            else:
+                sleep_start_time = None
+
+        # Update latest status
+        latest_status = {
+            "label": main_label,
+            "confidence": float(main_conf),
+            "faces": main_names,
+            "faces_info": faces_info,
+            "per_eye": [],
+            "timestamp": time.time(),
+            "snapshot": None
+        }
+
+        # 4) Encode processed frame as JPEG and return
+        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if not ok:
+            raise HTTPException(status_code=500, detail="Cannot encode processed frame")
+
+        # Return processed frame as base64
+        frame_b64 = base64.b64encode(buf).decode('utf-8')
+        
+        return {
+            "frame": f"data:image/jpeg;base64,{frame_b64}",
+            "status": latest_status,
+            "timestamp": time.time()
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing frame: {str(e)}")
+
 # ===== Sleep history StudentDashborad.tsx =====
 
 @app.get("/sleep-history/{username}")
