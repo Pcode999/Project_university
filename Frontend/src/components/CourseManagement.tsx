@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { API_URL } from "../constant/constant";
+import CourseStudentManagement from "./CourseStudentManagement";
 
 type Course = {
   _id: string;
@@ -27,6 +28,8 @@ const CourseManagement = () => {
   const [newCourse, setNewCourse] = useState({
     course_name: "",
   });
+  const [selectedCourse, setSelectedCourse] = useState<Course | null>(null);
+  const [showStudentManagement, setShowStudentManagement] = useState(false);
 
   const fetchCourses = async () => {
     try {
@@ -90,6 +93,16 @@ const CourseManagement = () => {
     } catch {
       setError("Failed to delete course.");
     }
+  };
+
+  const openStudentManagement = (course: Course) => {
+    setSelectedCourse(course);
+    setShowStudentManagement(true);
+  };
+
+  const closeStudentManagement = () => {
+    setSelectedCourse(null);
+    setShowStudentManagement(false);
   };
 
   const getUserDisplayName = (userId: string) => {
@@ -203,6 +216,12 @@ const CourseManagement = () => {
                 </div>
                 <div className="flex gap-2">
                   <button
+                    className="bg-blue-500 text-white px-3 py-1.5 rounded-lg text-sm hover:bg-blue-600 shadow"
+                    onClick={() => openStudentManagement(course)}
+                  >
+                    👥 จัดการสมาชิก
+                  </button>
+                  <button
                     className="bg-red-500 text-white px-3 py-1.5 rounded-lg text-sm hover:bg-red-600 shadow"
                     onClick={() => handleDeleteCourse(course._id)}
                   >
@@ -282,12 +301,20 @@ const CourseManagement = () => {
                     </div>
                   </td>
                   <td className="py-4 px-6">
-                    <button
-                      className="bg-gradient-to-r from-red-500 to-red-600 text-white px-4 py-2 rounded-lg hover:from-red-600 hover:to-red-700 transition-all duration-200 text-sm font-medium shadow-md hover:shadow-lg transform hover:scale-105"
-                      onClick={() => handleDeleteCourse(course._id)}
-                    >
-                      🗑️ Delete
-                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        className="bg-gradient-to-r from-blue-500 to-blue-600 text-white px-4 py-2 rounded-lg hover:from-blue-600 hover:to-blue-700 transition-all duration-200 text-sm font-medium shadow-md hover:shadow-lg transform hover:scale-105"
+                        onClick={() => openStudentManagement(course)}
+                      >
+                        👥 จัดการสมาชิก
+                      </button>
+                      <button
+                        className="bg-gradient-to-r from-red-500 to-red-600 text-white px-4 py-2 rounded-lg hover:from-red-600 hover:to-red-700 transition-all duration-200 text-sm font-medium shadow-md hover:shadow-lg transform hover:scale-105"
+                        onClick={() => handleDeleteCourse(course._id)}
+                      >
+                        🗑️ Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -295,6 +322,15 @@ const CourseManagement = () => {
           </table>
         </div>
       </div>
+
+      {/* Student Management Modal */}
+      {showStudentManagement && selectedCourse && (
+        <CourseStudentManagement
+          courseId={selectedCourse._id}
+          courseName={selectedCourse.course_name}
+          onClose={closeStudentManagement}
+        />
+      )}
     </div>
   );
 };

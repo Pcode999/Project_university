@@ -64,7 +64,7 @@ latest_status: Dict[str, Any] = {
 }
 
 # ---- เพิ่มตัวแปรตรวจหลับต่อเนื่อง ----
-sleep_threshold_sec: float = 3.0          # ครบกี่วินาทีจึงถือว่า Sleep
+sleep_threshold_sec: float = 5.0          # ครบกี่วินาทีจึงถือว่า Sleep
 sleep_start_time: float | None = None     # ระดับภาพรวม (กรณีไม่มีใบหน้าชัดเจน)
 sleep_timers: Dict[str, float | None] = {}  # ระดับรายบุคคล key=ชื่อ (รวม Unknown)
 
@@ -139,37 +139,25 @@ def _clip(v, lo, hi):
     return max(lo, min(int(v), hi))
 
 def get_user_display_name(user_id: str) -> str:
-    """
-    Get user's display name (first_name + last_name) by user_id.
-    Returns the formatted name or the user_id if not found.
-    """
+    """Get user's display name from database."""
     try:
-        # Handle ObjectId format
-        if len(user_id) == 24:
-            user = users_collection.find_one({"_id": ObjectId(user_id)})
-        else:
-            user = users_collection.find_one({"_id": user_id})
-        
+        user = users_collection.find_one({"_id": ObjectId(user_id)})
         if user:
             first_name = user.get("first_name", "").strip()
             last_name = user.get("last_name", "").strip()
-            
             if first_name and last_name:
                 return f"{first_name} {last_name}"
             elif first_name:
                 return first_name
-            elif last_name:
-                return last_name
-            else:
-                # Fallback to username if no first/last name
-                return user.get("username", user_id)
-        else:
-            return user_id
-    except Exception:
+            elif user.get("username"):
+                return user["username"]
+        return user_id
+    except:
         return user_id
 
+
 def extract_eye_crops(frame_bgr) -> List[np.ndarray]:
-    """ คืนลิสต์รูปตา [left, right] จากเฟรม ถ้าไม่เจอ → [] """
+    """ คืนลิสต์รูปตา [left, right] จากเฟรม ถ้าไม่เจอ คืน [] """
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     landmarks_list = fr.face_landmarks(rgb)
     H, W = frame_bgr.shape[:2]
@@ -196,7 +184,7 @@ def extract_eye_crops(frame_bgr) -> List[np.ndarray]:
 
 def predict_from_eyes(frame_bgr, min_conf_for_closed=70.0):
     """
-    รวมผลจากตาซ้าย/ขวา → (label, conf, per_eye)
+    รวมผลจากตาซ้าย/ขวา สู่ (label, conf, per_eye)
       - per_eye: [{"eye": "left"/"right", "label": "Open/Closed", "conf": float}, ...]
       - label/ conf ระดับภาพ: ใช้ rule-based ตาม per_eye
     """
@@ -229,6 +217,9 @@ class WhoSleepData(BaseModel):
     
 class DeleteSleepData(BaseModel):
     name: str
+
+class CourseStudentData(BaseModel):
+    user_id: str
 
 # Store recent sleep detection history (for real-time dashboard updates)
 recent_sleep_detections: List = []
@@ -308,6 +299,142 @@ async def remove_student_from_course_sleeping_list(course_id: str, user_id: str)
             
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error removing student: {str(e)}")
+
+# ===== Course Student Management =====
+
+@app.get('/courses/{course_id}/students')
+async def get_course_students(course_id: str):
+    """Get all students in a specific course."""
+    try:
+        course = courses_collection.find_one({"_id": ObjectId(course_id)})
+        if not course:
+            raise HTTPException(status_code=404, detail="Course not found")
+        
+        students = []
+        for user_id in course.get("sleeping_students", []):
+            user = users_collection.find_one({"_id": ObjectId(user_id)})
+            if user:
+                students.append({
+                    "user_id": str(user["_id"]),
+                    "username": user.get("username", ""),
+                    "first_name": user.get("first_name", ""),
+                    "last_name": user.get("last_name", ""),
+                    "email": user.get("email", ""),
+                    "display_name": get_user_display_name(user_id)
+                })
+        
+        return {
+            "course_id": course_id,
+            "course_name": course["course_name"],
+            "students": students,
+            "student_count": len(students)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error fetching course students: {str(e)}")
+
+@app.post('/courses/{course_id}/students')
+async def add_student_to_course(course_id: str, data: CourseStudentData):
+    """Add a student to a specific course."""
+    try:
+        # Check if course exists
+        course = courses_collection.find_one({"_id": ObjectId(course_id)})
+        if not course:
+            raise HTTPException(status_code=404, detail="Course not found")
+        
+        # Check if user exists
+        user = users_collection.find_one({"_id": ObjectId(data.user_id)})
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Check if student is already in the course
+        if data.user_id in course.get("sleeping_students", []):
+            raise HTTPException(status_code=400, detail="Student is already in this course")
+        
+        # Add student to course
+        result = courses_collection.update_one(
+            {"_id": ObjectId(course_id)},
+            {
+                "$addToSet": {"sleeping_students": data.user_id},
+                "$set": {"updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+            }
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=400, detail="Failed to add student to course")
+        
+        return {
+            "message": "Student added to course successfully",
+            "course_id": course_id,
+            "user_id": data.user_id,
+            "display_name": get_user_display_name(data.user_id)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error adding student to course: {str(e)}")
+
+@app.delete('/courses/{course_id}/students/{user_id}')
+async def remove_student_from_course_manual(course_id: str, user_id: str):
+    """Remove a student from a specific course (manual removal by admin)."""
+    try:
+        # Check if course exists
+        course = courses_collection.find_one({"_id": ObjectId(course_id)})
+        if not course:
+            raise HTTPException(status_code=404, detail="Course not found")
+        
+        # Check if user exists
+        user = users_collection.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Remove student from course
+        result = courses_collection.update_one(
+            {"_id": ObjectId(course_id)},
+            {
+                "$pull": {"sleeping_students": user_id},
+                "$set": {"updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+            }
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=400, detail="Student not found in this course")
+        
+        return {
+            "message": "Student removed from course successfully",
+            "course_id": course_id,
+            "user_id": user_id,
+            "display_name": get_user_display_name(user_id)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error removing student from course: {str(e)}")
+
+@app.get('/users/available')
+async def get_available_users():
+    """Get all users that can be added to courses."""
+    try:
+        users = list(users_collection.find({}))
+        user_list = []
+        
+        for user in users:
+            user_list.append({
+                "user_id": str(user["_id"]),
+                "username": user.get("username", ""),
+                "first_name": user.get("first_name", ""),
+                "last_name": user.get("last_name", ""),
+                "email": user.get("email", ""),
+                "display_name": get_user_display_name(str(user["_id"]))
+            })
+        
+        return {
+            "users": user_list,
+            "user_count": len(user_list)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error fetching users: {str(e)}")
 
 @app.post('/who-sleeping')
 async def post_who_sleeping(data: WhoSleepData):
@@ -670,9 +797,23 @@ async def process_frame(frame: FrameData):
                 "box": (l, t, r, b)
             })
 
+        # Extract just the display names for faces array
+        faces = [face["display_name"] for face in recognized_faces if face["display_name"]]
+        
+        # ตรวจสอบและบันทึกการหลับถ้ามีการเลือกคอร์ส
+        if label == "Sleep" and current_course_id and faces:
+            for face_name in faces:
+                # หา user_id จาก display name
+                matching_face = next((f for f in recognized_faces if f["display_name"] == face_name), None)
+                if matching_face and matching_face["name"] not in ["Unknown", "Error"]:
+                    user_id = matching_face["name"]
+                    add_sleeping_student_to_course(current_course_id, user_id)
+        
         result = {
             "status": "Frame processed",
-            "prediction": {"label": label, "confidence": conf},
+            "label": label,
+            "confidence": conf,
+            "faces": faces,
             "per_eye": per_eye,
             "recognized_faces": recognized_faces,
         }
@@ -784,7 +925,7 @@ async def video_feed(request: Request):
 
                 faces_info = []  # เก็บผลรายคนสำหรับส่งสถานะ
 
-                # 2) ตรวจตา “รายคน” แล้ววาดผลไว้ตรงหน้าคนนั้น
+                # 2) ตรวจตา "รายคน" แล้ววาดผลไว้ตรงหน้าคนนั้น
                 for (top, right, bottom, left), name in zip(face_locations, names):
                     # กัน index หลุดขอบ
                     top = max(0, top); left = max(0, left)
@@ -834,7 +975,7 @@ async def video_feed(request: Request):
                                         pass
                                 
                     else:
-                        # เปิดตา → รีเซ็ตตัวนับ
+                        # เปิดตา - รีเซ็ตตัวนับ
                         sleep_timers[key] = None
 
                     faces_info.append({
@@ -890,7 +1031,7 @@ async def video_feed(request: Request):
                         )
                         y_line += 22
 
-                    # แสดงเวลา Closed ต่อเนื่อง (ถ้ายังไม่ถึง 3 วิ)
+                    # แสดงเวลา Closed ต่อเนื่อง (ถ้ายังไม่ถึง 5 วิ)
                     if 0.0 < sleep_elapsed < sleep_threshold_sec:
                         remain = max(0.0, sleep_threshold_sec - sleep_elapsed)
                         tip = f"Sleeping in {remain:.1f}s"

@@ -11,9 +11,14 @@ class FaceRecognizer:
         self.known_face_names = []
         self.load_known_faces()
         
-        self.frame_skip = 2
+        # เพิ่ม frame_skip เพื่อลด delay (ประมวลผลทุก 3 เฟรม)
+        self.frame_skip = 8
         self.frame_count = 0
         self.last_result = ([], [])
+        
+        # เพิ่มตัวแปรสำหรับปรับการประมวลผล
+        self.process_scale = 0.25  # ลดขนาดเพิ่มเติม
+        self.max_faces = 5         # จำกัดจำนวนหน้าที่ประมวลผล
     
     def load_known_faces(self):
         print("🔄 โหลดใบหน้าที่รู้จักจาก:", self.image_folder)
@@ -54,10 +59,12 @@ class FaceRecognizer:
             return self.last_result
         
 
-        small_frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
+        # ลดขนาดภาพมากขึ้นเพื่อเพิ่มความเร็ว
+        small_frame = cv2.resize(frame, (0, 0), fx=self.process_scale, fy=self.process_scale)
         rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
 
-        face_locations = face_recognition.face_locations(rgb_small_frame)
+        # ใช้ model ที่เร็วกว่าแต่แม่นยำกว่า (hog เร็วกว่า cnn)
+        face_locations = face_recognition.face_locations(rgb_small_frame, model="hog")
 
         if len(face_locations) < self.min_faces:
             print(f"⚠️ ตรวจจับได้ {len(face_locations)} ใบหน้า (ต้องการอย่างน้อย {self.min_faces} ใบหน้า)")
@@ -66,13 +73,16 @@ class FaceRecognizer:
         if face_locations:
             try:
 
-                face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
+                # จำกัดจำนวนหน้าที่ประมวลผลเพื่อลด delay
+                limited_locations = face_locations[:self.max_faces]
+                face_encodings = face_recognition.face_encodings(rgb_small_frame, limited_locations)
                 
                 for face_encoding in face_encodings:
                     name = "Unknown"
                     
                     if self.known_face_encodings:  
-                        matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding, tolerance=0.6)
+                        # เพิ่ม tolerance เล็กน้อยเพื่อความเร็ว
+                        matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding, tolerance=0.5)
                         
                         if True in matches:
                             face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
@@ -86,7 +96,9 @@ class FaceRecognizer:
                 print(f"❌ ข้อผิดพลาดในการประมวลผล face encodings: {e}")
                 names = ["Error"] * len(face_locations)
 
-        face_locations = [(top*2, right*2, bottom*2, left*2) 
+        # ปรับ scale กลับตามขนาดที่ลดลง
+        scale_factor = 1 / self.process_scale
+        face_locations = [(int(top*scale_factor), int(right*scale_factor), int(bottom*scale_factor), int(left*scale_factor)) 
                          for (top, right, bottom, left) in face_locations]
         
         self.last_result = (face_locations, names)

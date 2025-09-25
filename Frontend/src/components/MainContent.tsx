@@ -25,7 +25,11 @@ const MainContent: React.FC = () => {
   const [confidence, setConfidence] = useState<number | null>(null);
   const [faces, setFaces] = useState<string[]>([]);
   const [selectedCourseId, setSelectedCourseId] = useState<string | null>(null);
+  const [isUsingCamera, setIsUsingCamera] = useState(false);
+  const [stream, setStream] = useState<MediaStream | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Sync course selection with backend
   const handleCourseSelect = async (courseId: string | null) => {
@@ -43,11 +47,78 @@ const MainContent: React.FC = () => {
     }
   };
 
-  const startStream = async () => {
+  // เริ่มใช้กล้องจาก Frontend
+  const startCameraStream = async () => {
+    console.log("🎥 Starting camera stream...");
+    
+    // ตรวจสอบว่า browser รองรับ getUserMedia หรือไม่
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert("❌ Browser ไม่รองรับการใช้งานกล้อง กรุณาใช้ Chrome, Firefox หรือ Edge");
+      setStreamStatus("error");
+      return;
+    }
+    
+    // ตรวจสอบ HTTPS
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+      alert("⚠️ การใช้งานกล้องต้องใช้ HTTPS หรือ localhost");
+      setStreamStatus("error");
+      return;
+    }
+    
+    try {
+      console.log("📷 Requesting camera access...");
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: { 
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          facingMode: "user" // ใช้กล้องหน้า
+        },
+        audio: false
+      });
+      
+      console.log("✅ Camera access granted");
+      setStream(mediaStream);
+      setIsUsingCamera(true);
+      setIsStreaming(true);
+      setStreamStatus("connected");
+      
+      if (videoRef.current) {
+        videoRef.current.srcObject = mediaStream;
+        await videoRef.current.play();
+        console.log("📹 Video element is playing");
+      }
+      
+      // เริ่มส่งเฟรมไปยัง backend
+      console.log("🚀 Starting frame capture...");
+      startFrameCapture();
+      
+    } catch (error: any) {
+      console.error("❌ Error accessing camera:", error);
+      setStreamStatus("error");
+      
+      let errorMessage = "ไม่สามารถเข้าถึงกล้องได้";
+      
+      if (error.name === 'NotAllowedError') {
+        errorMessage = "🚫 กรุณาอนุญาตการใช้งานกล้องใน browser";
+      } else if (error.name === 'NotFoundError') {
+        errorMessage = "📷 ไม่พบกล้อง กรุณาเชื่อมต่อกล้องเว็บ";
+      } else if (error.name === 'NotReadableError') {
+        errorMessage = "🔒 กล้องกำลังถูกใช้งานโดยแอปอื่น";
+      } else if (error.name === 'NotSupportedError') {
+        errorMessage = "❌ Browser ไม่รองรับการใช้งานกล้อง";
+      }
+      
+      alert(errorMessage);
+    }
+  };
+
+  // เริ่มใช้ backend stream (แบบเดิม)
+  const startBackendStream = async () => {
     try {
       const response = await fetch(`${API_BASE_URL}start_stream`, { method: "POST" });
       if (response.ok) {
         setIsStreaming(true);
+        setIsUsingCamera(false);
         setStreamStatus("connected");
         if (imgRef.current) {
           imgRef.current.src = `${API_BASE_URL}video_feed?t=${Date.now()}`;
@@ -59,11 +130,32 @@ const MainContent: React.FC = () => {
     }
   };
 
-  const stopStream = async () => {
+  // หยุดใช้กล้อง
+  const stopCameraStream = () => {
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      setStream(null);
+    }
+    
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    
+    setIsUsingCamera(false);
+    setIsStreaming(false);
+    setStreamStatus("disconnected");
+    setLabel(null);
+    setConfidence(null);
+    setFaces([]);
+  };
+
+  // หยุด backend stream
+  const stopBackendStream = async () => {
     try {
       const response = await fetch(`${API_BASE_URL}stop_stream`, { method: "POST" });
       if (response.ok) {
         setIsStreaming(false);
+        setIsUsingCamera(false);
         setStreamStatus("disconnected");
         setLabel(null);
         setConfidence(null);
@@ -72,6 +164,15 @@ const MainContent: React.FC = () => {
       }
     } catch (e) {
       console.error("Error stopping stream:", e);
+    }
+  };
+
+  // หยุดการสตรีมทั้งหมด
+  const stopStream = () => {
+    if (isUsingCamera) {
+      stopCameraStream();
+    } else {
+      stopBackendStream();
     }
   };
 
@@ -103,18 +204,90 @@ const MainContent: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (isStreaming && imgRef.current) {
+    if (isStreaming && !isUsingCamera && imgRef.current) {
       imgRef.current.src = `${API_BASE_URL}video_feed?t=${Date.now()}`;
     }
-  }, [isStreaming]);
+  }, [isStreaming, isUsingCamera]);
+
+  // ทำความสะอาดเมื่อ component unmount
+  useEffect(() => {
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [stream]);
+
+  // ส่งเฟรมจากกล้องไปยัง backend เพื่อประมวลผล
+  const startFrameCapture = () => {
+    let frameCount = 0;
+    
+    const captureFrame = async () => {
+      if (videoRef.current && canvasRef.current && isStreaming && isUsingCamera) {
+        const canvas = canvasRef.current;
+        const video = videoRef.current;
+        const ctx = canvas.getContext('2d');
+        
+        // ตรวจสอบว่า video พร้อมใช้งาน
+        if (!ctx || video.videoWidth === 0 || video.videoHeight === 0) {
+          console.log("⏳ Waiting for video to be ready...");
+          return;
+        }
+        
+        try {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0);
+          
+          // แปลงเป็น base64
+          const imageData = canvas.toDataURL('image/jpeg', 0.8);
+          frameCount++;
+          
+          console.log(`📸 Frame ${frameCount} captured, size: ${canvas.width}x${canvas.height}`);
+          
+          // ส่งไปยัง backend เพื่อประมวลผล
+          const response = await fetch(`${API_BASE_URL}process_frame`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ image: imageData })
+          });
+          
+          if (response.ok) {
+            const data = await response.json();
+            setLabel(data.label || null);
+            setConfidence(data.confidence || null);
+            setFaces(data.faces || []);
+          } else {
+            console.error(`❌ Backend error: ${response.status} - ${response.statusText}`);
+          }
+        } catch (error) {
+          console.error("❌ Error processing frame:", error);
+        }
+      }
+    };
+    
+    console.log("⏰ Setting up frame capture interval (every 1000ms)");
+    // เปลี่ยนจาก 500ms เป็น 1000ms เพื่อลดโหลด
+    const interval = setInterval(captureFrame, 1000);
+    
+    // เก็บ interval reference เพื่อจะได้ clear ได้
+    return () => {
+      console.log("🛑 Clearing frame capture interval");
+      clearInterval(interval);
+    };
+  };
 
   const handleImageError = () => {
-    setStreamStatus("error");
-    setTimeout(() => {
-      if (isStreaming && imgRef.current) {
-        imgRef.current.src = `${API_BASE_URL}video_feed?t=${Date.now()}`;
-      }
-    }, 1500);
+    if (!isUsingCamera) {
+      setStreamStatus("error");
+      setTimeout(() => {
+        if (isStreaming && imgRef.current) {
+          imgRef.current.src = `${API_BASE_URL}video_feed?t=${Date.now()}`;
+        }
+      }, 1500);
+    }
   };
 
   return (
@@ -176,18 +349,54 @@ const MainContent: React.FC = () => {
 
             {isStreaming ? (
               <div className="relative w-full h-full">
-                <img
-                  ref={imgRef}
-                  alt="Video Stream"
-                  className="w-full h-full object-contain"
-                  onError={handleImageError}
-                  onLoad={() => setStreamStatus("connected")}
-                />
+                {isUsingCamera ? (
+                  <>
+                    <video
+                      ref={videoRef}
+                      className="w-full h-full object-contain"
+                      autoPlay
+                      muted
+                      playsInline
+                    />
+                    <canvas
+                      ref={canvasRef}
+                      className="hidden"
+                    />
+                  </>
+                ) : (
+                  <img
+                    ref={imgRef}
+                    alt="Video Stream"
+                    className="w-full h-full object-contain"
+                    onError={handleImageError}
+                    onLoad={() => setStreamStatus("connected")}
+                  />
+                )}
                 {/* LIVE */}
                 <div className="absolute top-4 right-4 sm:top-6 sm:right-6 flex items-center space-x-2 bg-red-500/90 backdrop-blur-sm rounded-full px-2.5 py-0.5 sm:px-3 sm:py-1">
                   <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-white rounded-full animate-pulse"></div>
-                  <span className="text-white text-xs sm:text-sm font-medium">LIVE</span>
+                  <span className="text-white text-xs sm:text-sm font-medium">
+                    {isUsingCamera ? "CAMERA" : "LIVE"}
+                  </span>
                 </div>
+                {/* แสดงข้อมูลการตรวจจับบนหน้าจอ */}
+                {(label || faces.length > 0) && (
+                  <div className="absolute bottom-4 left-4 bg-black/70 text-white p-3 rounded-lg">
+                    {label && (
+                      <div className="text-sm">
+                        Status: <span className="font-bold">{label}</span>
+                        {confidence && (
+                          <span className="ml-2">({confidence.toFixed(0)}%)</span>
+                        )}
+                      </div>
+                    )}
+                    {faces.length > 0 && (
+                      <div className="text-xs mt-1">
+                        Faces: {faces.join(", ")}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="w-full h-full flex items-center justify-center text-white">
@@ -219,18 +428,30 @@ const MainContent: React.FC = () => {
 
         {/* Controls Section */}
         <div className="bg-gradient-to-r from-emerald-50 to-green-50 px-4 sm:px-6 lg:px-8 py-4 sm:py-6">
-          <div className="flex justify-center">
+          <div className="flex flex-col sm:flex-row justify-center gap-4">
             {!isStreaming ? (
-              <button
-                onClick={startStream}
-                className="group relative w-full sm:w-auto px-6 sm:px-10 py-3 sm:py-4 bg-gradient-to-r from-emerald-500 to-green-600 text-white rounded-2xl hover:from-emerald-600 hover:to-green-700 transition-all duration-300 shadow-lg hover:shadow-2xl transform hover:scale-105 font-semibold text-base sm:text-lg overflow-hidden"
-              >
-                <div className="absolute inset-0 bg-gradient-to-r from-white/0 to-white/20 transform translate-x-full group-hover:translate-x-0 transition-transform duration-500"></div>
-                <div className="relative flex items-center justify-center space-x-3">
-                  <span className="text-xl sm:text-2xl">▶️</span>
-                  <span>เริ่มการตรวจจับ</span>
-                </div>
-              </button>
+              <>
+                <button
+                  onClick={startCameraStream}
+                  className="group relative w-full sm:w-auto px-6 sm:px-8 py-3 sm:py-4 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-2xl hover:from-blue-600 hover:to-blue-700 transition-all duration-300 shadow-lg hover:shadow-2xl transform hover:scale-105 font-semibold text-base overflow-hidden"
+                >
+                  <div className="absolute inset-0 bg-gradient-to-r from-white/0 to-white/20 transform translate-x-full group-hover:translate-x-0 transition-transform duration-500"></div>
+                  <div className="relative flex items-center justify-center space-x-3">
+                    <span className="text-lg">📷</span>
+                    <span>ใช้กล้องเว็บ</span>
+                  </div>
+                </button>
+                <button
+                  onClick={startBackendStream}
+                  className="group relative w-full sm:w-auto px-6 sm:px-8 py-3 sm:py-4 bg-gradient-to-r from-emerald-500 to-green-600 text-white rounded-2xl hover:from-emerald-600 hover:to-green-700 transition-all duration-300 shadow-lg hover:shadow-2xl transform hover:scale-105 font-semibold text-base overflow-hidden"
+                >
+                  <div className="absolute inset-0 bg-gradient-to-r from-white/0 to-white/20 transform translate-x-full group-hover:translate-x-0 transition-transform duration-500"></div>
+                  <div className="relative flex items-center justify-center space-x-3">
+                    <span className="text-lg">🖥️</span>
+                    <span>ใช้เซิร์ฟเวอร์</span>
+                  </div>
+                </button>
+              </>
             ) : (
               <button
                 onClick={stopStream}
@@ -257,7 +478,7 @@ const MainContent: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
                   <span className="text-gray-700">
-                    AI Detection: {isStreaming ? "Active" : "Standby"}
+                    AI Detection: {isStreaming ? (isUsingCamera ? "Camera Active" : "Server Active") : "Standby"}
                   </span>
                 </div>
                 <div className="hidden sm:block w-px h-4 bg-gray-300" />
